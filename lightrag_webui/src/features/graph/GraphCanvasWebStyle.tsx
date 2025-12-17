@@ -80,7 +80,14 @@ const buildG6Data = (rawGraph: any): { nodes: G6Node[]; edges: G6Edge[] } => {
 
   const edges: G6Edge[] = edgesInput.map((e: any, idx: number) => {
     const id = e.id ? String(e.id) : `edge-${idx}`
-    const label = e.type ? String(e.type) : ''
+    const label =
+      (typeof e?.properties?.keywords === 'string' && e.properties.keywords.trim()
+        ? e.properties.keywords
+        : typeof e?.properties?.relation === 'string' && e.properties.relation.trim()
+          ? e.properties.relation
+          : e.type
+            ? String(e.type)
+            : '')
     return {
       id,
       source: String(e.source),
