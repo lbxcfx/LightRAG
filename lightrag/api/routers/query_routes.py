@@ -19,7 +19,7 @@ class QueryRequest(BaseModel):
         description="The query text",
     )
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass", "bm25"] = Field(
         default="mix",
         description="Query mode",
     )
@@ -418,6 +418,20 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # Get the non-streaming response content
             response_content = llm_response.get("content", "")
+
+            # Some LLM bindings may still return a streaming iterator even when stream=False.
+            # For the non-streaming /query endpoint, consume the iterator and return the full text.
+            if (
+                (not response_content)
+                and llm_response.get("is_streaming")
+                and llm_response.get("response_iterator") is not None
+            ):
+                chunks: list[str] = []
+                async for chunk in llm_response["response_iterator"]:
+                    if chunk:
+                        chunks.append(chunk)
+                response_content = "".join(chunks).strip()
+
             if not response_content:
                 response_content = "No relevant context found for the query."
 

@@ -3,6 +3,7 @@ import { createSelectors } from '@/lib/utils'
 import { checkHealth, LightragStatus } from '@/api/lightrag'
 import { useSettingsStore } from './settings'
 import { healthCheckInterval } from '@/lib/constants'
+import { isJwtExpired, parseJwtPayload } from '@/utils/jwt'
 
 interface BackendState {
   health: boolean
@@ -156,17 +157,8 @@ const useBackendState = createSelectors(useBackendStateStoreBase)
 
 export { useBackendState }
 
-const parseTokenPayload = (token: string): { sub?: string; role?: string } => {
-  try {
-    // JWT tokens are in the format: header.payload.signature
-    const parts = token.split('.');
-    if (parts.length !== 3) return {};
-    const payload = JSON.parse(atob(parts[1]));
-    return payload;
-  } catch (e) {
-    console.error('Error parsing token payload:', e);
-    return {};
-  }
+const parseTokenPayload = (token: string): { sub?: string; role?: string; exp?: number } => {
+  return parseJwtPayload(token)
 };
 
 const getUsernameFromToken = (token: string): string | null => {
@@ -187,7 +179,10 @@ const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; core
   const webuiDescription = localStorage.getItem('LIGHTRAG-WEBUI-DESCRIPTION');
   const username = token ? getUsernameFromToken(token) : null;
 
-  if (!token) {
+  if (!token || isJwtExpired(token)) {
+    if (token) {
+      localStorage.removeItem('LIGHTRAG-API-TOKEN')
+    }
     return {
       isAuthenticated: false,
       isGuestMode: false,

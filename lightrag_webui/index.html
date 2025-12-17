@@ -11,6 +11,35 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      (() => {
+        const root = document.getElementById('root');
+        if (!root) return;
+        root.textContent = 'Loading...';
+        const show = (err) => {
+          try {
+            const msg =
+              (err && (err.stack || err.message)) ||
+              (typeof err === 'string' ? err : JSON.stringify(err));
+            root.innerHTML =
+              '<div style="padding:16px;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,\\'Liberation Mono\\',\\'Courier New\\', monospace;">' +
+              '<div style="font-weight:600;margin-bottom:8px;">WebUI failed to render</div>' +
+              '<pre style="white-space:pre-wrap;word-break:break-word;background:#f3f4f6;padding:12px;border-radius:8px;max-height:50vh;overflow:auto;">' +
+              (msg || 'Unknown error') +
+              '</pre>' +
+              '</div>';
+          } catch {
+            root.textContent = 'WebUI failed to render (unknown error).';
+          }
+        };
+        window.addEventListener('error', (e) => show(e.error || e.message));
+        window.addEventListener('unhandledrejection', (e) => show(e.reason));
+        // If the app never mounts, keep at least some visible content.
+        setTimeout(() => {
+          if (!root.firstChild || root.textContent === 'Loading...') return;
+        }, 4000);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -360,7 +360,8 @@ def create_app(args):
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
 
-            ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
+            # Keep output ASCII-only for Windows consoles with non-UTF8 default encodings.
+            ASCIIColors.green("\nServer is ready to accept connections!\n")
 
             yield
 

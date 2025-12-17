@@ -38,3 +38,10 @@ vchordrq_epsilon = 1.9
 
 [memgraph]
 uri = bolt://localhost:7687
+
+[opensearch]
+host =
+user =
+password =
+index_chunks = lightrag-chunks
+verify_certs = true

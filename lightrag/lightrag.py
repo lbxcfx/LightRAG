@@ -91,6 +91,7 @@ from lightrag.operate import (
     merge_nodes_and_edges,
     kg_query,
     naive_query,
+    bm25_query,
     rebuild_knowledge_from_chunks,
 )
 from lightrag.constants import GRAPH_FIELD_SEP
@@ -150,6 +151,28 @@ class LightRAG:
 
     doc_status_storage: str = field(default="JsonDocStatusStorage")
     """Storage type for tracking document processing statuses."""
+
+    # OpenSearch (BM25)
+    # ---
+
+    opensearch_host: str = field(default=os.getenv("OPENSEARCH_HOST", ""))
+    """OpenSearch endpoint (host or https://host:port). Leave empty to disable BM25."""
+
+    opensearch_user: str = field(default=os.getenv("OPENSEARCH_USER", ""))
+    """OpenSearch basic auth username (optional)."""
+
+    opensearch_password: str = field(default=os.getenv("OPENSEARCH_PASSWORD", ""))
+    """OpenSearch basic auth password (optional)."""
+
+    opensearch_index_chunks: str = field(
+        default=os.getenv("OPENSEARCH_INDEX_CHUNKS", "lightrag-chunks")
+    )
+    """OpenSearch index name for chunk-level BM25."""
+
+    opensearch_verify_certs: bool = field(
+        default=os.getenv("OPENSEARCH_VERIFY_CERTS", "true").lower() != "false"
+    )
+    """Whether to verify TLS certificates when connecting to OpenSearch."""
 
     # Workspace
     # ---
@@ -2625,6 +2648,13 @@ class LightRAG:
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
             )
+        elif data_param.mode == "bm25":
+            logger.debug("[aquery_data] Using bm25_query")
+            query_result = await bm25_query(
+                query.strip(),
+                data_param,
+                global_config,
+            )
         elif data_param.mode == "bypass":
             logger.debug("[aquery_data] Using bypass mode")
             # bypass mode returns empty data using convert_to_user_format
@@ -2720,6 +2750,12 @@ class LightRAG:
                     global_config,
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
+                )
+            elif param.mode == "bm25":
+                query_result = await bm25_query(
+                    query.strip(),
+                    param,
+                    global_config,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval

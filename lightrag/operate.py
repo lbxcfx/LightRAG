@@ -59,11 +59,19 @@ from lightrag.constants import (
     DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
+    DEFAULT_CHUNK_TOP_K,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
+)
+from lightrag.opensearch_bm25 import (
+    build_opensearch_client,
+    ensure_index,
+    bulk_index_chunks_from_file,
+    get_index_stats,
+    search_bm25,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
@@ -5000,3 +5008,184 @@ async def naive_query(
         return QueryResult(
             response_iterator=response, raw_data=raw_data, is_streaming=True
         )
+
+
+async def bm25_query(
+    query: str,
+    query_param: QueryParam,
+    global_config: dict[str, Any],
+) -> QueryResult | None:
+    """Lexical BM25 retrieval over OpenSearch chunk index."""
+
+    if not query:
+        return QueryResult(content=PROMPTS["fail_response"])
+
+    client = build_opensearch_client(global_config)
+    if client is None:
+        logger.error("OpenSearch client is not configured; bm25 mode disabled.")
+        return QueryResult(content=PROMPTS["fail_response"])
+
+    index_name = global_config.get("opensearch_index_chunks", "lightrag-chunks")
+    ensure_index(client, index_name)
+
+    stats = get_index_stats(client, index_name)
+    if stats.get("count", 0) == 0:
+        bulk_index_chunks_from_file(
+            client,
+            index_name,
+            working_dir=global_config.get("working_dir", "./rag_storage"),
+            workspace=global_config.get("workspace", ""),
+        )
+        stats = get_index_stats(client, index_name)
+
+    size = query_param.chunk_top_k or query_param.top_k or DEFAULT_CHUNK_TOP_K
+    hits = search_bm25(client, index_name, query, size=size, fields=["content"])
+    if not hits:
+        logger.info("[bm25_query] No BM25 hits")
+        return None
+
+    chunks = []
+    for hit in hits:
+        source = hit.get("_source", {}) or {}
+        content = source.get("content", "")
+        if not content:
+            continue
+        chunks.append(
+            {
+                "content": content,
+                "file_path": source.get("file_path", ""),
+                "full_doc_id": source.get("doc_id", ""),
+                "chunk_id": source.get("chunk_id") or hit.get("_id"),
+                "chunk_order_index": source.get("chunk_order_index", 0),
+                "score": hit.get("_score", 0),
+                "source_type": "bm25",
+            }
+        )
+
+    if not chunks:
+        logger.info("[bm25_query] Filtered chunks are empty")
+        return None
+
+    tokenizer: Tokenizer = global_config.get("tokenizer")
+    if not tokenizer:
+        logger.error("Tokenizer not found in global configuration.")
+        return QueryResult(content=PROMPTS["fail_response"])
+
+    # Align with other query modes: choose LLM function from param override or global config
+    use_model_func = query_param.model_func or global_config.get("llm_model_func")
+    if not use_model_func:
+        logger.error("LLM model function not found in global configuration.")
+        return QueryResult(content=PROMPTS["fail_response"])
+    use_model_func = partial(use_model_func, _priority=5)
+
+    max_total_tokens = getattr(
+        query_param, "max_total_tokens", global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS)
+    )
+    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    response_type = query_param.response_type if query_param.response_type else "Multiple Paragraphs"
+    sys_prompt_template = PROMPTS["naive_rag_response"]
+    pre_sys_prompt = sys_prompt_template.format(
+        response_type=response_type,
+        user_prompt=user_prompt,
+        content_data="",
+    )
+
+    sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
+    query_tokens = len(tokenizer.encode(query))
+    buffer_tokens = 200
+    available_chunk_tokens = max_total_tokens - (
+        sys_prompt_tokens + query_tokens + buffer_tokens
+    )
+
+    processed_chunks = await process_chunks_unified(
+        query=query,
+        unique_chunks=chunks,
+        query_param=query_param,
+        global_config=global_config,
+        source_type="bm25",
+        chunk_token_limit=available_chunk_tokens,
+    )
+
+    reference_list, processed_chunks_with_ref_ids = generate_reference_list_from_chunks(
+        processed_chunks
+    )
+
+    raw_data = convert_to_user_format(
+        [],  # no entities
+        [],  # no relationships
+        processed_chunks_with_ref_ids,
+        reference_list,
+        "bm25",
+    )
+
+    if "metadata" not in raw_data:
+        raw_data["metadata"] = {}
+    raw_data["metadata"]["keywords"] = {
+        "high_level": [],
+        "low_level": [],
+    }
+    raw_data["metadata"]["processing_info"] = {
+        "total_chunks_found": len(chunks),
+        "final_chunks_count": len(processed_chunks_with_ref_ids),
+        "bm25_index_docs": stats.get("count", 0),
+    }
+
+    chunks_context = []
+    for chunk in processed_chunks_with_ref_ids:
+        chunks_context.append(
+            {
+                "reference_id": chunk["reference_id"],
+                "content": chunk["content"],
+            }
+        )
+
+    text_units_str = "\n".join(
+        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
+    )
+    reference_list_str = "\n".join(
+        f"[{ref['reference_id']}] {ref['file_path']}"
+        for ref in reference_list
+        if ref["reference_id"]
+    )
+
+    context_content = PROMPTS["naive_query_context"].format(
+        text_chunks_str=text_units_str,
+        reference_list_str=reference_list_str,
+    )
+
+    if query_param.only_need_context and not query_param.only_need_prompt:
+        return QueryResult(content=context_content, raw_data=raw_data)
+
+    sys_prompt = sys_prompt_template.format(
+        response_type=query_param.response_type,
+        user_prompt=user_prompt,
+        content_data=context_content,
+    )
+
+    if query_param.only_need_prompt:
+        prompt_content = "\n\n".join([sys_prompt, "---User Query---", query])
+        return QueryResult(content=prompt_content, raw_data=raw_data)
+
+    response = await use_model_func(
+        query,
+        system_prompt=sys_prompt,
+        history_messages=query_param.conversation_history,
+        enable_cot=True,
+        stream=query_param.stream,
+    )
+
+    if isinstance(response, str):
+        if len(response) > len(sys_prompt):
+            response = (
+                response[len(sys_prompt) :]
+                .replace(sys_prompt, "")
+                .replace("user", "")
+                .replace("model", "")
+                .replace(query, "")
+                .replace("<system>", "")
+                .replace("</system>", "")
+                .strip()
+            )
+        return QueryResult(content=response, raw_data=raw_data)
+
+    return QueryResult(response_iterator=response, raw_data=raw_data, is_streaming=True)

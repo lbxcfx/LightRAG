@@ -2,30 +2,34 @@
 Utility functions for the LightRAG API.
 """
 
-import os
+from __future__ import annotations
+
 import argparse
-from typing import Optional, List, Tuple
+import os
 import sys
+from typing import List, Optional, Tuple
+
 from ascii_colors import ASCIIColors
-from lightrag.api import __api_version__ as api_version
-from lightrag import __version__ as core_version
-from lightrag.constants import (
-    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
-)
-from fastapi import HTTPException, Security, Request, status
+from fastapi import HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
+
+from lightrag import __version__ as core_version
+from lightrag.api import __api_version__ as api_version
+
 from .auth import auth_handler
-from .config import ollama_server_infos, global_args, get_env_value
+from .config import global_args, ollama_server_infos
 
 
-def check_env_file():
+def check_env_file() -> bool:
     """
     Check if .env file exists and handle user confirmation if needed.
     Returns True if should continue, False if should exit.
     """
     if not os.path.exists(".env"):
-        warning_msg = "Warning: Startup directory must contain .env file for multi-instance support."
+        warning_msg = (
+            "Warning: Startup directory must contain .env file for multi-instance support."
+        )
         ASCIIColors.yellow(warning_msg)
 
         # Check if running in interactive terminal
@@ -60,25 +64,14 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
     """
     Create a combined authentication dependency that implements authentication logic
     based on API key, OAuth2 token, and whitelist paths.
-
-    Args:
-        api_key (Optional[str]): API key for validation
-
-    Returns:
-        Callable: A dependency function that implements the authentication logic
     """
-    # Use global whitelist_patterns and auth_configured variables
-    # whitelist_patterns and auth_configured are already initialized at module level
 
-    # Only calculate api_key_configured as it depends on the function parameter
     api_key_configured = bool(api_key)
 
-    # Create security dependencies with proper descriptions for Swagger UI
     oauth2_scheme = OAuth2PasswordBearer(
         tokenUrl="login", auto_error=False, description="OAuth2 Password Authentication"
     )
 
-    # If API key is configured, create an API key header security
     api_key_header = None
     if api_key_configured:
         api_key_header = APIKeyHeader(
@@ -117,47 +110,30 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                     detail="Invalid token. Please login again.",
                 )
             except HTTPException as e:
-                # If already a 401 error, re-raise it
                 if e.status_code == status.HTTP_401_UNAUTHORIZED:
                     raise
-                # For other exceptions, continue processing
 
-        # 3. Acept all request if no API protection needed
+        # 3. Accept all requests if no API protection needed
         if not auth_configured and not api_key_configured:
             return
 
         # 4. Validate API key if provided and API-Key authentication is configured
-        if (
-            api_key_configured
-            and api_key_header_value
-            and api_key_header_value == api_key
-        ):
+        if api_key_configured and api_key_header_value and api_key_header_value == api_key:
             return  # API key validation successful
 
-        ### Authentication failed ####
-
-        # if password authentication is configured but not provided, ensure 401 error if auth_configured
+        # Authentication failed
         if auth_configured and not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="No credentials provided. Please login.",
             )
 
-        # if api key is provided but validation failed
         if api_key_header_value:
-            raise HTTPException(
-                status_code=HTTP_403_FORBIDDEN,
-                detail="Invalid API Key",
-            )
+            raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Invalid API Key")
 
-        # if api_key_configured but not provided
         if api_key_configured and not api_key_header_value:
-            raise HTTPException(
-                status_code=HTTP_403_FORBIDDEN,
-                detail="API Key required",
-            )
+            raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="API Key required")
 
-        # Otherwise: refuse access and return 403 error
         raise HTTPException(
             status_code=HTTP_403_FORBIDDEN,
             detail="API Key required or login authentication required.",
@@ -168,175 +144,50 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
 
 def display_splash_screen(args: argparse.Namespace) -> None:
     """
-    Display a colorful splash screen showing LightRAG server configuration
+    Display a splash screen showing LightRAG server configuration.
 
-    Args:
-        args: Parsed command line arguments
+    Keep output ASCII-only to avoid startup crashes on Windows consoles whose default
+    encoding may not support emojis/box-drawing characters.
     """
-    # Banner
-    # Banner
-    top_border = "╔══════════════════════════════════════════════════════════════╗"
-    bottom_border = "╚══════════════════════════════════════════════════════════════╝"
-    width = len(top_border) - 4  # width inside the borders
 
-    line1_text = f"LightRAG Server v{core_version}/{api_version}"
-    line2_text = "Fast, Lightweight RAG Server Implementation"
+    banner_width = 64
+    border = "=" * banner_width
+    line1 = f"LightRAG Server v{core_version}/{api_version}".center(banner_width)
+    line2 = "Fast, Lightweight RAG Server Implementation".center(banner_width)
 
-    line1 = f"║ {line1_text.center(width)} ║"
-    line2 = f"║ {line2_text.center(width)} ║"
+    ASCIIColors.cyan("\n" + "\n".join([border, line1, line2, border]) + "\n")
 
-    banner = f"""
-    {top_border}
-    {line1}
-    {line2}
-    {bottom_border}
-    """
-    ASCIIColors.cyan(banner)
+    def _print_kv(label: str, value: object) -> None:
+        ASCIIColors.white(f"  - {label}: ", end="")
+        ASCIIColors.yellow(str(value))
 
-    # Server Configuration
-    ASCIIColors.magenta("\n📡 Server Configuration:")
-    ASCIIColors.white("    ├─ Host: ", end="")
-    ASCIIColors.yellow(f"{args.host}")
-    ASCIIColors.white("    ├─ Port: ", end="")
-    ASCIIColors.yellow(f"{args.port}")
-    ASCIIColors.white("    ├─ Workers: ", end="")
-    ASCIIColors.yellow(f"{args.workers}")
-    ASCIIColors.white("    ├─ Timeout: ", end="")
-    ASCIIColors.yellow(f"{args.timeout}")
-    ASCIIColors.white("    ├─ CORS Origins: ", end="")
-    ASCIIColors.yellow(f"{args.cors_origins}")
-    ASCIIColors.white("    ├─ SSL Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.ssl}")
-    if args.ssl:
-        ASCIIColors.white("    ├─ SSL Cert: ", end="")
-        ASCIIColors.yellow(f"{args.ssl_certfile}")
-        ASCIIColors.white("    ├─ SSL Key: ", end="")
-        ASCIIColors.yellow(f"{args.ssl_keyfile}")
-    ASCIIColors.white("    ├─ Ollama Emulating Model: ", end="")
-    ASCIIColors.yellow(f"{ollama_server_infos.LIGHTRAG_MODEL}")
-    ASCIIColors.white("    ├─ Log Level: ", end="")
-    ASCIIColors.yellow(f"{args.log_level}")
-    ASCIIColors.white("    ├─ Verbose Debug: ", end="")
-    ASCIIColors.yellow(f"{args.verbose}")
-    ASCIIColors.white("    ├─ API Key: ", end="")
-    ASCIIColors.yellow("Set" if args.key else "Not Set")
-    ASCIIColors.white("    └─ JWT Auth: ", end="")
-    ASCIIColors.yellow("Enabled" if args.auth_accounts else "Disabled")
-
-    # Directory Configuration
-    ASCIIColors.magenta("\n📂 Directory Configuration:")
-    ASCIIColors.white("    ├─ Working Directory: ", end="")
-    ASCIIColors.yellow(f"{args.working_dir}")
-    ASCIIColors.white("    └─ Input Directory: ", end="")
-    ASCIIColors.yellow(f"{args.input_dir}")
-
-    # LLM Configuration
-    ASCIIColors.magenta("\n🤖 LLM Configuration:")
-    ASCIIColors.white("    ├─ Binding: ", end="")
-    ASCIIColors.yellow(f"{args.llm_binding}")
-    ASCIIColors.white("    ├─ Host: ", end="")
-    ASCIIColors.yellow(f"{args.llm_binding_host}")
-    ASCIIColors.white("    ├─ Model: ", end="")
-    ASCIIColors.yellow(f"{args.llm_model}")
-    ASCIIColors.white("    ├─ Max Async for LLM: ", end="")
-    ASCIIColors.yellow(f"{args.max_async}")
-    ASCIIColors.white("    ├─ Summary Context Size: ", end="")
-    ASCIIColors.yellow(f"{args.summary_context_size}")
-    ASCIIColors.white("    ├─ LLM Cache Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.enable_llm_cache}")
-    ASCIIColors.white("    └─ LLM Cache for Extraction Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.enable_llm_cache_for_extract}")
-
-    # Embedding Configuration
-    ASCIIColors.magenta("\n📊 Embedding Configuration:")
-    ASCIIColors.white("    ├─ Binding: ", end="")
-    ASCIIColors.yellow(f"{args.embedding_binding}")
-    ASCIIColors.white("    ├─ Host: ", end="")
-    ASCIIColors.yellow(f"{args.embedding_binding_host}")
-    ASCIIColors.white("    ├─ Model: ", end="")
-    ASCIIColors.yellow(f"{args.embedding_model}")
-    ASCIIColors.white("    └─ Dimensions: ", end="")
-    ASCIIColors.yellow(f"{args.embedding_dim}")
-
-    # RAG Configuration
-    ASCIIColors.magenta("\n⚙️ RAG Configuration:")
-    ASCIIColors.white("    ├─ Summary Language: ", end="")
-    ASCIIColors.yellow(f"{args.summary_language}")
-    ASCIIColors.white("    ├─ Entity Types: ", end="")
-    ASCIIColors.yellow(f"{args.entity_types}")
-    ASCIIColors.white("    ├─ Max Parallel Insert: ", end="")
-    ASCIIColors.yellow(f"{args.max_parallel_insert}")
-    ASCIIColors.white("    ├─ Chunk Size: ", end="")
-    ASCIIColors.yellow(f"{args.chunk_size}")
-    ASCIIColors.white("    ├─ Chunk Overlap Size: ", end="")
-    ASCIIColors.yellow(f"{args.chunk_overlap_size}")
-    ASCIIColors.white("    ├─ Cosine Threshold: ", end="")
-    ASCIIColors.yellow(f"{args.cosine_threshold}")
-    ASCIIColors.white("    ├─ Top-K: ", end="")
-    ASCIIColors.yellow(f"{args.top_k}")
-    ASCIIColors.white("    └─ Force LLM Summary on Merge: ", end="")
-    ASCIIColors.yellow(
-        f"{get_env_value('FORCE_LLM_SUMMARY_ON_MERGE', DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int)}"
+    ASCIIColors.magenta("Server Configuration:")
+    _print_kv("Host", getattr(args, "host", ""))
+    _print_kv("Port", getattr(args, "port", ""))
+    _print_kv("Workers", getattr(args, "workers", ""))
+    _print_kv("Timeout", getattr(args, "timeout", ""))
+    _print_kv("SSL Enabled", getattr(args, "ssl", False))
+    _print_kv("API Key", "Set" if getattr(args, "key", None) else "Not Set")
+    _print_kv(
+        "JWT Auth",
+        "Enabled" if getattr(args, "auth_accounts", None) else "Disabled",
     )
 
-    # System Configuration
-    ASCIIColors.magenta("\n💾 Storage Configuration:")
-    ASCIIColors.white("    ├─ KV Storage: ", end="")
-    ASCIIColors.yellow(f"{args.kv_storage}")
-    ASCIIColors.white("    ├─ Vector Storage: ", end="")
-    ASCIIColors.yellow(f"{args.vector_storage}")
-    ASCIIColors.white("    ├─ Graph Storage: ", end="")
-    ASCIIColors.yellow(f"{args.graph_storage}")
-    ASCIIColors.white("    ├─ Document Status Storage: ", end="")
-    ASCIIColors.yellow(f"{args.doc_status_storage}")
-    ASCIIColors.white("    └─ Workspace: ", end="")
-    ASCIIColors.yellow(f"{args.workspace if args.workspace else '-'}")
+    ASCIIColors.magenta("\nDirectory Configuration:")
+    _print_kv("Working Directory", getattr(args, "working_dir", ""))
+    _print_kv("Input Directory", getattr(args, "input_dir", ""))
+    _print_kv("Workspace", getattr(args, "workspace", "") or "-")
 
-    # Server Status
-    ASCIIColors.green("\n✨ Server starting up...\n")
+    ASCIIColors.magenta("\nLLM Configuration:")
+    _print_kv("Binding", getattr(args, "llm_binding", ""))
+    _print_kv("Host", getattr(args, "llm_binding_host", ""))
+    _print_kv("Model", getattr(args, "llm_model", ""))
+    _print_kv("Ollama Emulating Model", getattr(ollama_server_infos, "LIGHTRAG_MODEL", ""))
 
-    # Server Access Information
-    protocol = "https" if args.ssl else "http"
-    if args.host == "0.0.0.0":
-        ASCIIColors.magenta("\n🌐 Server Access Information:")
-        ASCIIColors.white("    ├─ WebUI (local): ", end="")
-        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}")
-        ASCIIColors.white("    ├─ Remote Access: ", end="")
-        ASCIIColors.yellow(f"{protocol}://<your-ip-address>:{args.port}")
-        ASCIIColors.white("    ├─ API Documentation (local): ", end="")
-        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/docs")
-        ASCIIColors.white("    └─ Alternative Documentation (local): ", end="")
-        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
+    ASCIIColors.magenta("\nEmbedding Configuration:")
+    _print_kv("Binding", getattr(args, "embedding_binding", ""))
+    _print_kv("Host", getattr(args, "embedding_binding_host", ""))
+    _print_kv("Model", getattr(args, "embedding_model", ""))
 
-        ASCIIColors.magenta("\n📝 Note:")
-        ASCIIColors.cyan("""    Since the server is running on 0.0.0.0:
-    - Use 'localhost' or '127.0.0.1' for local access
-    - Use your machine's IP address for remote access
-    - To find your IP address:
-      • Windows: Run 'ipconfig' in terminal
-      • Linux/Mac: Run 'ifconfig' or 'ip addr' in terminal
-    """)
-    else:
-        base_url = f"{protocol}://{args.host}:{args.port}"
-        ASCIIColors.magenta("\n🌐 Server Access Information:")
-        ASCIIColors.white("    ├─ WebUI (local): ", end="")
-        ASCIIColors.yellow(f"{base_url}")
-        ASCIIColors.white("    ├─ API Documentation: ", end="")
-        ASCIIColors.yellow(f"{base_url}/docs")
-        ASCIIColors.white("    └─ Alternative Documentation: ", end="")
-        ASCIIColors.yellow(f"{base_url}/redoc")
+    ASCIIColors.green("\nServer starting up...\n")
 
-    # Security Notice
-    if args.key:
-        ASCIIColors.yellow("\n⚠️  Security Notice:")
-        ASCIIColors.white("""    API Key authentication is enabled.
-    Make sure to include the X-API-Key header in all your requests.
-    """)
-    if args.auth_accounts:
-        ASCIIColors.yellow("\n⚠️  Security Notice:")
-        ASCIIColors.white("""    JWT authentication is enabled.
-    Make sure to login before making the request, and include the 'Authorization' in the header.
-    """)
-
-    # Ensure splash output flush to system log
-    sys.stdout.flush()

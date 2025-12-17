@@ -32,8 +32,8 @@ export const searchLabelsDefaultLimit = 50
 // UI Display Limits
 export const dropdownDisplayLimit = 300
 
-export const minNodeSize = 4
-export const maxNodeSize = 20
+export const minNodeSize = 6
+export const maxNodeSize = 30
 
 export const healthCheckInterval = 15 // seconds
 

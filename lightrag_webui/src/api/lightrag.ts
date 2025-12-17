@@ -3,6 +3,7 @@ import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } f
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { navigationService } from '@/services/navigation'
+import { isJwtExpired } from '@/utils/jwt'
 
 // Types
 export type LightragNodeType = {
@@ -92,9 +93,10 @@ export type LightragDocumentsScanProgress = {
  * - "global": Utilizes global knowledge.
  * - "hybrid": Combines local and global retrieval methods.
  * - "mix": Integrates knowledge graph and vector retrieval.
+ * - "bm25": Lexical BM25 search over chunk index.
  * - "bypass": Bypasses knowledge retrieval and directly uses the LLM.
  */
-export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass'
+export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass' | 'bm25'
 
 export type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -285,10 +287,20 @@ const axiosInstance = axios.create({
   }
 })
 
+const getValidToken = (): string | null => {
+  const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
+  if (!token) return null
+  if (isJwtExpired(token)) {
+    localStorage.removeItem('LIGHTRAG-API-TOKEN')
+    return null
+  }
+  return token
+}
+
 // Interceptor: add api key and check authentication
 axiosInstance.interceptors.request.use((config) => {
   const apiKey = useSettingsStore.getState().apiKey
-  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const token = getValidToken()
 
   // Always include token if it exists, regardless of path
   if (token) {
@@ -396,7 +408,7 @@ export const queryTextStream = async (
   onError?: (error: string) => void
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
-  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const token = getValidToken()
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     'Accept': 'application/x-ndjson',
